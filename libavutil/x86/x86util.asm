@@ -29,8 +29,16 @@
 
 %include "libavutil/x86/x86inc.asm"
 
+; expands to [base],...,[base+7*stride]
+%define PASS8ROWS(base, base3, stride, stride3) \
+    [base],           [base  + stride],   [base  + 2*stride], [base3], \
+    [base3 + stride], [base3 + 2*stride], [base3 + stride3],  [base3 + stride*4]
+
 %macro SBUTTERFLY 4
-%if avx_enabled == 0
+%ifidn %1, dqqq
+    vperm2i128  m%4, m%2, m%3, q0301
+    vinserti128 m%2, m%2, xm%3, 1
+%elif avx_enabled == 0
     mova      m%4, m%2
     punpckl%1 m%2, m%3
     punpckh%1 m%4, m%3
@@ -193,6 +201,85 @@
 %endif
 %endmacro
 
+%macro TRANSPOSE16x16W 18-19
+; in:  m0..m15, unless %19 in which case m6 is in %17
+; out: m0..m15, unless %19 in which case m4 is in %18
+; spills into %17 and %18
+%if %0 < 19
+    mova       %17, m%7
+%endif
+
+    SBUTTERFLY dqqq, %1,  %9, %7
+    SBUTTERFLY dqqq, %2, %10, %7
+    SBUTTERFLY dqqq, %3, %11, %7
+    SBUTTERFLY dqqq, %4, %12, %7
+    SBUTTERFLY dqqq, %5, %13, %7
+    SBUTTERFLY dqqq, %6, %14, %7
+    mova       %18, m%14
+    mova       m%7, %17
+    SBUTTERFLY dqqq, %7, %15, %14
+    SBUTTERFLY dqqq, %8, %16, %14
+
+    SBUTTERFLY  wd,  %1,  %2, %14
+    SBUTTERFLY  wd,  %3,  %4, %14
+    SBUTTERFLY  wd,  %5,  %6, %14
+    SBUTTERFLY  wd,  %7,  %8, %14
+    SBUTTERFLY  wd,  %9, %10, %14
+    SBUTTERFLY  wd, %11, %12, %14
+    mova       %17, m%12
+    mova      m%14, %18
+    SBUTTERFLY  wd, %13, %14, %12
+    SBUTTERFLY  wd, %15, %16, %12
+
+    SBUTTERFLY  dq,  %1,  %3, %12
+    SBUTTERFLY  dq,  %2,  %4, %12
+    SBUTTERFLY  dq,  %5,  %7, %12
+    SBUTTERFLY  dq,  %6,  %8, %12
+    SBUTTERFLY  dq,  %9, %11, %12
+    mova       %18, m%11
+    mova      m%12, %17
+    SBUTTERFLY  dq, %10, %12, %11
+    SBUTTERFLY  dq, %13, %15, %11
+    SBUTTERFLY  dq, %14, %16, %11
+
+    SBUTTERFLY qdq,  %1,  %5, %11
+    SBUTTERFLY qdq,  %2,  %6, %11
+    SBUTTERFLY qdq,  %3,  %7, %11
+    SBUTTERFLY qdq,  %4,  %8, %11
+
+    SWAP        %2, %5
+    SWAP        %4, %7
+
+    SBUTTERFLY qdq,  %9, %13, %11
+    SBUTTERFLY qdq, %10, %14, %11
+    mova      m%11, %18
+    mova       %18, m%5
+    SBUTTERFLY qdq, %11, %15, %5
+    SBUTTERFLY qdq, %12, %16, %5
+
+%if %0 < 19
+    mova       m%5, %18
+%endif
+
+    SWAP       %10, %13
+    SWAP       %12, %15
+%endmacro
+
+%macro TRANSPOSE_8X8B 8
+    %if mmsize == 8
+        %error "This macro does not support mmsize == 8"
+    %endif
+    punpcklbw m%1, m%2
+    punpcklbw m%3, m%4
+    punpcklbw m%5, m%6
+    punpcklbw m%7, m%8
+    TRANSPOSE4x4W %1, %3, %5, %7, %2
+    MOVHL m%2, m%1
+    MOVHL m%4, m%3
+    MOVHL m%6, m%5
+    MOVHL m%8, m%7
+%endmacro
+
 ; PABSW macro assumes %1 != %2, while ABS1/2 macros work in-place
 %macro PABSW 2
 %if cpuflag(ssse3)
@@ -210,13 +297,13 @@
 %endif
 %endmacro
 
-%macro PSIGNW_MMX 2
+%macro PSIGNW 2
+%if cpuflag(ssse3)
+    psignw     %1, %2
+%else
     pxor       %1, %2
     psubw      %1, %2
-%endmacro
-
-%macro PSIGNW_SSSE3 2
-    psignw     %1, %2
+%endif
 %endmacro
 
 %macro ABS1 2
@@ -354,6 +441,17 @@
 %else
     pmaddwd %1, [pw_1]
     HADDD   %1, %2
+%endif
+%endmacro
+
+%macro HADDPS 3 ; dst, src, tmp
+%if cpuflag(sse3)
+    haddps  %1, %1, %2
+%else
+    movaps  %3, %1
+    shufps  %1, %2, q2020
+    shufps  %3, %2, q3131
+    addps   %1, %3
 %endif
 %endmacro
 
@@ -765,25 +863,6 @@
 %endif
 %endmacro
 
-%macro PMA_EMU 4
-    %macro %1 5-8 %2, %3, %4
-        %if cpuflag(xop)
-            v%6 %1, %2, %3, %4
-        %elifidn %1, %4
-            %7 %5, %2, %3
-            %8 %1, %4, %5
-        %else
-            %7 %1, %2, %3
-            %8 %1, %4
-        %endif
-    %endmacro
-%endmacro
-
-PMA_EMU  PMACSWW,  pmacsww,  pmullw, paddw
-PMA_EMU  PMACSDD,  pmacsdd,  pmulld, paddd ; sse4 emulation
-PMA_EMU PMACSDQL, pmacsdql,  pmuldq, paddq ; sse4 emulation
-PMA_EMU PMADCSWD, pmadcswd, pmaddwd, paddd
-
 ; Wrapper for non-FMA version of fmaddps
 %macro FMULADD_PS 5
     %if cpuflag(fma3) || cpuflag(fma4)
@@ -810,5 +889,17 @@ PMA_EMU PMADCSWD, pmadcswd, pmaddwd, paddd
     psrldq  %1, %2
 %else
     psrlq   %1, 8*(%2)
+%endif
+%endmacro
+
+%macro MOVHL 2 ; dst, src
+%ifidn %1, %2
+    punpckhqdq %1, %2
+%elif cpuflag(avx)
+    punpckhqdq %1, %2, %2
+%elif cpuflag(sse4)
+    pshufd     %1, %2, q3232 ; pshufd is slow on some older CPUs, so only use it on more modern ones
+%else
+    movhlps    %1, %2        ; may cause an int/float domain transition and has a dependency on dst
 %endif
 %endmacro

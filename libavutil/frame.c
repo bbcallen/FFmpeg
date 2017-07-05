@@ -1,5 +1,4 @@
 /*
- *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -27,6 +26,11 @@
 #include "mem.h"
 #include "samplefmt.h"
 
+
+static AVFrameSideData *frame_new_side_data(AVFrame *frame,
+                                            enum AVFrameSideDataType type,
+                                            AVBufferRef *buf);
+
 MAKE_ACCESSORS(AVFrame, frame, int64_t, best_effort_timestamp)
 MAKE_ACCESSORS(AVFrame, frame, int64_t, pkt_duration)
 MAKE_ACCESSORS(AVFrame, frame, int64_t, pkt_pos)
@@ -46,29 +50,35 @@ MAKE_ACCESSORS(AVFrame, frame, enum AVColorRange, color_range)
 
 AVDictionary **avpriv_frame_get_metadatap(AVFrame *frame) {return &frame->metadata;};
 
+#if FF_API_FRAME_QP
 int av_frame_set_qp_table(AVFrame *f, AVBufferRef *buf, int stride, int qp_type)
 {
     av_buffer_unref(&f->qp_table_buf);
 
     f->qp_table_buf = buf;
 
+FF_DISABLE_DEPRECATION_WARNINGS
     f->qscale_table = buf->data;
     f->qstride      = stride;
     f->qscale_type  = qp_type;
+FF_ENABLE_DEPRECATION_WARNINGS
 
     return 0;
 }
 
 int8_t *av_frame_get_qp_table(AVFrame *f, int *stride, int *type)
 {
+FF_DISABLE_DEPRECATION_WARNINGS
     *stride = f->qstride;
     *type   = f->qscale_type;
+FF_ENABLE_DEPRECATION_WARNINGS
 
     if (!f->qp_table_buf)
         return NULL;
 
     return f->qp_table_buf->data;
 }
+#endif
 
 const char *av_get_colorspace_name(enum AVColorSpace val)
 {
@@ -94,12 +104,16 @@ static void get_frame_defaults(AVFrame *frame)
     memset(frame, 0, sizeof(*frame));
 
     frame->pts                   =
-    frame->pkt_dts               =
+    frame->pkt_dts               = AV_NOPTS_VALUE;
+#if FF_API_PKT_PTS
+FF_DISABLE_DEPRECATION_WARNINGS
     frame->pkt_pts               = AV_NOPTS_VALUE;
-    av_frame_set_best_effort_timestamp(frame, AV_NOPTS_VALUE);
-    av_frame_set_pkt_duration         (frame, 0);
-    av_frame_set_pkt_pos              (frame, -1);
-    av_frame_set_pkt_size             (frame, -1);
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
+    frame->best_effort_timestamp = AV_NOPTS_VALUE;
+    frame->pkt_duration        = 0;
+    frame->pkt_pos             = -1;
+    frame->pkt_size            = -1;
     frame->key_frame           = 1;
     frame->sample_aspect_ratio = (AVRational){ 0, 1 };
     frame->format              = -1; /* unknown */
@@ -109,6 +123,7 @@ static void get_frame_defaults(AVFrame *frame)
     frame->colorspace          = AVCOL_SPC_UNSPECIFIED;
     frame->color_range         = AVCOL_RANGE_UNSPECIFIED;
     frame->chroma_location     = AVCHROMA_LOC_UNSPECIFIED;
+    frame->flags               = 0;
 }
 
 static void free_side_data(AVFrameSideData **ptr_sd)
@@ -182,7 +197,7 @@ static int get_video_buffer(AVFrame *frame, int align)
     for (i = 0; i < 4 && frame->linesize[i]; i++) {
         int h = FFALIGN(frame->height, 32);
         if (i == 1 || i == 2)
-            h = FF_CEIL_RSHIFT(h, desc->log2_chroma_h);
+            h = AV_CEIL_RSHIFT(h, desc->log2_chroma_h);
 
         frame->buf[i] = av_buffer_alloc(frame->linesize[i] * h + 16 + 16/*STRIDE_ALIGN*/ - 1);
         if (!frame->buf[i])
@@ -192,7 +207,7 @@ static int get_video_buffer(AVFrame *frame, int align)
     }
     if (desc->flags & AV_PIX_FMT_FLAG_PAL || desc->flags & AV_PIX_FMT_FLAG_PSEUDOPAL) {
         av_buffer_unref(&frame->buf[1]);
-        frame->buf[1] = av_buffer_alloc(1024);
+        frame->buf[1] = av_buffer_alloc(AVPALETTE_SIZE);
         if (!frame->buf[1])
             goto fail;
         frame->data[1] = frame->buf[1]->data;
@@ -289,10 +304,11 @@ static int frame_copy_props(AVFrame *dst, const AVFrame *src, int force_copy)
     dst->palette_has_changed    = src->palette_has_changed;
     dst->sample_rate            = src->sample_rate;
     dst->opaque                 = src->opaque;
-#if FF_API_AVFRAME_LAVC
-    dst->type                   = src->type;
-#endif
+#if FF_API_PKT_PTS
+FF_DISABLE_DEPRECATION_WARNINGS
     dst->pkt_pts                = src->pkt_pts;
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
     dst->pkt_dts                = src->pkt_dts;
     dst->pkt_pos                = src->pkt_pos;
     dst->pkt_size               = src->pkt_size;
@@ -312,7 +328,11 @@ static int frame_copy_props(AVFrame *dst, const AVFrame *src, int force_copy)
 
     av_dict_copy(&dst->metadata, src->metadata, 0);
 
+#if FF_API_ERROR_FRAME
+FF_DISABLE_DEPRECATION_WARNINGS
     memcpy(dst->error, src->error, sizeof(dst->error));
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
 
     for (i = 0; i < src->nb_side_data; i++) {
         const AVFrameSideData *sd_src = src->side_data[i];
@@ -329,25 +349,21 @@ static int frame_copy_props(AVFrame *dst, const AVFrame *src, int force_copy)
             }
             memcpy(sd_dst->data, sd_src->data, sd_src->size);
         } else {
-            sd_dst = av_frame_new_side_data(dst, sd_src->type, 0);
+            sd_dst = frame_new_side_data(dst, sd_src->type, av_buffer_ref(sd_src->buf));
             if (!sd_dst) {
                 wipe_side_data(dst);
                 return AVERROR(ENOMEM);
             }
-            sd_dst->buf = av_buffer_ref(sd_src->buf);
-            if (!sd_dst->buf) {
-                wipe_side_data(dst);
-                return AVERROR(ENOMEM);
-            }
-            sd_dst->data = sd_dst->buf->data;
-            sd_dst->size = sd_dst->buf->size;
         }
         av_dict_copy(&sd_dst->metadata, sd_src->metadata, 0);
     }
 
+#if FF_API_FRAME_QP
+FF_DISABLE_DEPRECATION_WARNINGS
     dst->qscale_table = NULL;
     dst->qstride      = 0;
     dst->qscale_type  = 0;
+    av_buffer_unref(&dst->qp_table_buf);
     if (src->qp_table_buf) {
         dst->qp_table_buf = av_buffer_ref(src->qp_table_buf);
         if (dst->qp_table_buf) {
@@ -356,6 +372,15 @@ static int frame_copy_props(AVFrame *dst, const AVFrame *src, int force_copy)
             dst->qscale_type  = src->qscale_type;
         }
     }
+FF_ENABLE_DEPRECATION_WARNINGS
+#endif
+
+    av_buffer_unref(&dst->opaque_ref);
+    if (src->opaque_ref) {
+        dst->opaque_ref = av_buffer_ref(src->opaque_ref);
+        if (!dst->opaque_ref)
+            return AVERROR(ENOMEM);
+    }
 
     return 0;
 }
@@ -363,6 +388,9 @@ static int frame_copy_props(AVFrame *dst, const AVFrame *src, int force_copy)
 int av_frame_ref(AVFrame *dst, const AVFrame *src)
 {
     int i, ret = 0;
+
+    av_assert1(dst->width == 0 && dst->height == 0);
+    av_assert1(dst->channels == 0);
 
     dst->format         = src->format;
     dst->width          = src->width;
@@ -417,6 +445,14 @@ int av_frame_ref(AVFrame *dst, const AVFrame *src)
         }
     }
 
+    if (src->hw_frames_ctx) {
+        dst->hw_frames_ctx = av_buffer_ref(src->hw_frames_ctx);
+        if (!dst->hw_frames_ctx) {
+            ret = AVERROR(ENOMEM);
+            goto fail;
+        }
+    }
+
     /* duplicate extended data */
     if (src->extended_data != src->data) {
         int ch = src->channels;
@@ -463,6 +499,9 @@ void av_frame_unref(AVFrame *frame)
 {
     int i;
 
+    if (!frame)
+        return;
+
     wipe_side_data(frame);
 
     for (i = 0; i < FF_ARRAY_ELEMS(frame->buf); i++)
@@ -471,13 +510,22 @@ void av_frame_unref(AVFrame *frame)
         av_buffer_unref(&frame->extended_buf[i]);
     av_freep(&frame->extended_buf);
     av_dict_free(&frame->metadata);
+#if FF_API_FRAME_QP
     av_buffer_unref(&frame->qp_table_buf);
+#endif
+
+    av_buffer_unref(&frame->hw_frames_ctx);
+
+    av_buffer_unref(&frame->opaque_ref);
 
     get_frame_defaults(frame);
 }
 
 void av_frame_move_ref(AVFrame *dst, AVFrame *src)
 {
+    av_assert1(dst->width == 0 && dst->height == 0);
+    av_assert1(dst->channels == 0);
+
     *dst = *src;
     if (src->extended_data == src->data)
         dst->extended_data = dst->data;
@@ -581,40 +629,49 @@ AVBufferRef *av_frame_get_plane_buffer(AVFrame *frame, int plane)
     return NULL;
 }
 
-AVFrameSideData *av_frame_new_side_data(AVFrame *frame,
-                                        enum AVFrameSideDataType type,
-                                        int size)
+static AVFrameSideData *frame_new_side_data(AVFrame *frame,
+                                            enum AVFrameSideDataType type,
+                                            AVBufferRef *buf)
 {
     AVFrameSideData *ret, **tmp;
 
-    if (frame->nb_side_data > INT_MAX / sizeof(*frame->side_data) - 1)
+    if (!buf)
         return NULL;
+
+    if (frame->nb_side_data > INT_MAX / sizeof(*frame->side_data) - 1)
+        goto fail;
 
     tmp = av_realloc(frame->side_data,
                      (frame->nb_side_data + 1) * sizeof(*frame->side_data));
     if (!tmp)
-        return NULL;
+        goto fail;
     frame->side_data = tmp;
 
     ret = av_mallocz(sizeof(*ret));
     if (!ret)
-        return NULL;
+        goto fail;
 
-    if (size > 0) {
-        ret->buf = av_buffer_alloc(size);
-        if (!ret->buf) {
-            av_freep(&ret);
-            return NULL;
-        }
-
-        ret->data = ret->buf->data;
-        ret->size = size;
-    }
+    ret->buf = buf;
+    ret->data = ret->buf->data;
+    ret->size = buf->size;
     ret->type = type;
 
     frame->side_data[frame->nb_side_data++] = ret;
 
     return ret;
+fail:
+    av_buffer_unref(&buf);
+    return NULL;
+}
+
+AVFrameSideData *av_frame_new_side_data(AVFrame *frame,
+                                        enum AVFrameSideDataType type,
+                                        int size)
+{
+    if (size <= 0)
+        return NULL;
+
+    return frame_new_side_data(frame, type, av_buffer_alloc(size));
 }
 
 AVFrameSideData *av_frame_get_side_data(const AVFrame *frame,
@@ -682,7 +739,7 @@ int av_frame_copy(AVFrame *dst, const AVFrame *src)
 
     if (dst->width > 0 && dst->height > 0)
         return frame_copy_video(dst, src);
-    else if (dst->nb_samples > 0 && dst->channel_layout)
+    else if (dst->nb_samples > 0 && dst->channels > 0)
         return frame_copy_audio(dst, src);
 
     return AVERROR(EINVAL);
@@ -712,7 +769,12 @@ const char *av_frame_side_data_name(enum AVFrameSideDataType type)
     case AV_FRAME_DATA_DOWNMIX_INFO:    return "Metadata relevant to a downmix procedure";
     case AV_FRAME_DATA_REPLAYGAIN:      return "AVReplayGain";
     case AV_FRAME_DATA_DISPLAYMATRIX:   return "3x3 displaymatrix";
+    case AV_FRAME_DATA_AFD:             return "Active format description";
     case AV_FRAME_DATA_MOTION_VECTORS:  return "Motion vectors";
+    case AV_FRAME_DATA_SKIP_SAMPLES:    return "Skip samples";
+    case AV_FRAME_DATA_AUDIO_SERVICE_TYPE:          return "Audio service type";
+    case AV_FRAME_DATA_MASTERING_DISPLAY_METADATA:  return "Mastering display metadata";
+    case AV_FRAME_DATA_GOP_TIMECODE:                return "GOP timecode";
     }
     return NULL;
 }

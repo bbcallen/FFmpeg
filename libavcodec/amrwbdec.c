@@ -151,7 +151,6 @@ static int decode_mime_header(AMRWBContext *ctx, const uint8_t *buf)
  *
  * @param[in]  ind                 Array of 5 indexes
  * @param[out] isf_q               Buffer for isf_q[LP_ORDER]
- *
  */
 static void decode_isf_indices_36b(uint16_t *ind, float *isf_q)
 {
@@ -178,7 +177,6 @@ static void decode_isf_indices_36b(uint16_t *ind, float *isf_q)
  *
  * @param[in]  ind                 Array of 7 indexes
  * @param[out] isf_q               Buffer for isf_q[LP_ORDER]
- *
  */
 static void decode_isf_indices_46b(uint16_t *ind, float *isf_q)
 {
@@ -212,7 +210,6 @@ static void decode_isf_indices_46b(uint16_t *ind, float *isf_q)
  *
  * @param[in,out] isf_q            Current quantized ISF
  * @param[in,out] isf_past         Past quantized ISF
- *
  */
 static void isf_add_mean_and_past(float *isf_q, float *isf_past)
 {
@@ -295,7 +292,7 @@ static void decode_pitch_lag_low(int *lag_int, int *lag_frac, int pitch_index,
     if (subframe == 0 || (subframe == 2 && mode != MODE_6k60)) {
         if (pitch_index < 116) {
             *lag_int  = (pitch_index + 69) >> 1;
-            *lag_frac = (pitch_index - (*lag_int << 1) + 68) << 1;
+            *lag_frac = (pitch_index - (*lag_int << 1) + 68) * 2;
         } else {
             *lag_int  = pitch_index - 24;
             *lag_frac = 0;
@@ -305,7 +302,7 @@ static void decode_pitch_lag_low(int *lag_int, int *lag_frac, int pitch_index,
                                 AMRWB_P_DELAY_MIN, AMRWB_P_DELAY_MAX - 15);
     } else {
         *lag_int  = (pitch_index + 1) >> 1;
-        *lag_frac = (pitch_index - (*lag_int << 1)) << 1;
+        *lag_frac = (pitch_index - (*lag_int << 1)) * 2;
         *lag_int += *base_lag_int;
     }
 }
@@ -358,7 +355,7 @@ static void decode_pitch_vector(AMRWBContext *ctx,
 }
 
 /** Get x bits in the index interval [lsb,lsb+len-1] inclusive */
-#define BIT_STR(x,lsb,len) (((x) >> (lsb)) & ((1 << (len)) - 1))
+#define BIT_STR(x,lsb,len) av_mod_uintp2((x) >> (lsb), (len))
 
 /** Get the bit at specified position */
 #define BIT_POS(x, p) (((x) >> (p)) & 1)
@@ -1273,7 +1270,7 @@ AVCodec ff_amrwb_decoder = {
     .priv_data_size = sizeof(AMRWBContext),
     .init           = amrwb_decode_init,
     .decode         = amrwb_decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
+    .capabilities   = AV_CODEC_CAP_DR1,
     .sample_fmts    = (const enum AVSampleFormat[]){ AV_SAMPLE_FMT_FLT,
                                                      AV_SAMPLE_FMT_NONE },
 };

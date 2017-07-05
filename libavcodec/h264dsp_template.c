@@ -21,7 +21,7 @@
 
 /**
  * @file
- * H.264 / AVC / MPEG4 part10 DSP functions.
+ * H.264 / AVC / MPEG-4 part10 DSP functions.
  * @author Michael Niedermayer <michaelni@gmx.at>
  */
 
@@ -30,7 +30,7 @@
 #define op_scale1(x)  block[x] = av_clip_pixel( (block[x]*weight + offset) >> log2_denom )
 #define op_scale2(x)  dst[x] = av_clip_pixel( (src[x]*weights + dst[x]*weightd + offset) >> (log2_denom+1))
 #define H264_WEIGHT(W) \
-static void FUNCC(weight_h264_pixels ## W)(uint8_t *_block, int stride, int height, \
+static void FUNCC(weight_h264_pixels ## W)(uint8_t *_block, ptrdiff_t stride, int height, \
                                            int log2_denom, int weight, int offset) \
 { \
     int y; \
@@ -60,7 +60,7 @@ static void FUNCC(weight_h264_pixels ## W)(uint8_t *_block, int stride, int heig
         op_scale1(15); \
     } \
 } \
-static void FUNCC(biweight_h264_pixels ## W)(uint8_t *_dst, uint8_t *_src, int stride, int height, \
+static void FUNCC(biweight_h264_pixels ## W)(uint8_t *_dst, uint8_t *_src, ptrdiff_t stride, int height, \
                                              int log2_denom, int weightd, int weights, int offset) \
 { \
     int y; \
@@ -110,7 +110,7 @@ static av_always_inline av_flatten void FUNCC(h264_loop_filter_luma)(uint8_t *p_
     alpha <<= BIT_DEPTH - 8;
     beta  <<= BIT_DEPTH - 8;
     for( i = 0; i < 4; i++ ) {
-        const int tc_orig = tc0[i] << (BIT_DEPTH - 8);
+        const int tc_orig = tc0[i] * (1 << (BIT_DEPTH - 8));
         if( tc_orig < 0 ) {
             pix += inner_iters*ystride;
             continue;
@@ -141,7 +141,7 @@ static av_always_inline av_flatten void FUNCC(h264_loop_filter_luma)(uint8_t *p_
                     tc++;
                 }
 
-                i_delta = av_clip( (((q0 - p0 ) << 2) + (p1 - q1) + 4) >> 3, -tc, tc );
+                i_delta = av_clip( (((q0 - p0 ) * 4) + (p1 - q1) + 4) >> 3, -tc, tc );
                 pix[-xstride] = av_clip_pixel( p0 + i_delta );    /* p0' */
                 pix[0]        = av_clip_pixel( q0 - i_delta );    /* q0' */
             }

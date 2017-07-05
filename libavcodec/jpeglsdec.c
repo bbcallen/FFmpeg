@@ -375,6 +375,11 @@ int ff_jpegls_decode_picture(MJpegDecodeContext *s, int near,
     else
         shift = point_transform + (16 - s->bits);
 
+    if (shift >= 16) {
+        ret = AVERROR_INVALIDDATA;
+        goto end;
+    }
+
     if (s->avctx->debug & FF_DEBUG_PICT_INFO) {
         av_log(s->avctx, AV_LOG_DEBUG,
                "JPEG-LS params: %ix%i NEAR=%i MV=%i T(%i,%i,%i) "
@@ -523,6 +528,6 @@ AVCodec ff_jpegls_decoder = {
     .init           = ff_mjpeg_decode_init,
     .close          = ff_mjpeg_decode_end,
     .decode         = ff_mjpeg_decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
+    .capabilities   = AV_CODEC_CAP_DR1,
     .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

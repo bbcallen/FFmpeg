@@ -23,16 +23,12 @@
 #include "libavutil/cpu.h"
 #include "libavutil/x86/asm.h"
 #include "libavutil/x86/cpu.h"
+#include "libavcodec/h264dec.h"
 #include "libavcodec/h264qpel.h"
-#include "libavcodec/mpegvideo.h"
 #include "libavcodec/pixels.h"
 #include "fpel.h"
 
 #if HAVE_YASM
-void ff_put_pixels4_mmx(uint8_t *block, const uint8_t *pixels,
-                        ptrdiff_t line_size, int h);
-void ff_avg_pixels4_mmxext(uint8_t *block, const uint8_t *pixels,
-                           ptrdiff_t line_size, int h);
 void ff_put_pixels4_l2_mmxext(uint8_t *dst, const uint8_t *src1, const uint8_t *src2,
                               int dstStride, int src1Stride, int h);
 void ff_avg_pixels4_l2_mmxext(uint8_t *dst, const uint8_t *src1, const uint8_t *src2,
@@ -566,11 +562,6 @@ av_cold void ff_h264qpel_init_x86(H264QpelContext *c, int bit_depth)
     }
 
     if (EXTERNAL_SSE2(cpu_flags)) {
-        if (!(cpu_flags & AV_CPU_FLAG_SSE2SLOW) && !high_bit_depth) {
-            // these functions are slower than mmx on AMD, but faster on Intel
-            H264_QPEL_FUNCS(0, 0, sse2);
-        }
-
         if (!high_bit_depth) {
             H264_QPEL_FUNCS(0, 1, sse2);
             H264_QPEL_FUNCS(0, 2, sse2);
@@ -594,6 +585,12 @@ av_cold void ff_h264qpel_init_x86(H264QpelContext *c, int bit_depth)
             H264_QPEL_FUNCS_10(1, 0, sse2_cache64);
             H264_QPEL_FUNCS_10(2, 0, sse2_cache64);
             H264_QPEL_FUNCS_10(3, 0, sse2_cache64);
+        }
+    }
+
+    if (EXTERNAL_SSE2_FAST(cpu_flags)) {
+        if (!high_bit_depth) {
+            H264_QPEL_FUNCS(0, 0, sse2);
         }
     }
 
